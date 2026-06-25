@@ -1,0 +1,12 @@
+# Excel source files — keep out of Git (size + confidentiality)
+data/*.xlsx
+data/*.xls
+
+# Generated output
+output/*.html
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+chartjs.min.js
