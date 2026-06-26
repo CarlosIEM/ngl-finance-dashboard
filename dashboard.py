@@ -200,21 +200,21 @@ def find_files():
 
 
 def _col_info(path):
-    """Return (col_label, sort_key) from filename, e.g. ('Jun 21', (6,21))."""
+    """Return (col_label, sort_key) from filename."""
     stem = path.stem.lower().replace(" ", "_")
-    # Week-level June files: look for june_07, june_14, june_21 etc.
     import re
+    # Week-level June files: "Jun 1–7", "Jun 1–14", "Jun 1–21"
     m = re.search(r"june_(\d{1,2})_actual", stem)
     if m:
         day = int(m.group(1))
-        return f"Jun {day}", (6, day)
-    # Monthly: find the month name after "vs_"
+        return f"Jun 1–{day}", (6, day)
+    # Monthly files: full-month label e.g. "Jan 2026"
     parts = stem.split("_vs_")
     if len(parts) >= 2:
         actual_part = parts[1]
         for mk, (num, abbr) in MONTH_KEY.items():
             if mk in actual_part:
-                return abbr, (num, 0)
+                return f"{abbr} 2026", (num, 0)
     return path.stem[:6], (99, 0)
 
 
@@ -502,6 +502,7 @@ def build_alerts(tbl):
     """Return list of alert dicts sorted by impact (abs MNT variance)."""
     alerts = []
     last = len(tbl["col_headers"]) - 1  # most recent column
+    period_label = tbl["col_headers"][last]   # e.g. "Jun 1–21"
     jun_bgt_idx = last   # for June files, last column is most recent MTD
 
     for r in tbl["rows"]:
@@ -518,7 +519,7 @@ def build_alerts(tbl):
                 "impact": abs(actual),
                 "label": r["display"],
                 "cat":   r["category"],
-                "text":  f"{fmt_mnt(actual)} MNT — no budget set (unbudgeted item)",
+                "text":  f"{fmt_mnt(actual)} MNT in {period_label} — no budget set (unbudgeted item)",
                 "tag":   "Unbudgeted",
             })
             continue
@@ -531,7 +532,7 @@ def build_alerts(tbl):
                     "impact": budget,
                     "label": r["display"],
                     "cat":   r["category"],
-                    "text":  (f"0 received vs {fmt_mnt(budget)} MNT budgeted — "
+                    "text":  (f"0 received in {period_label} vs {fmt_mnt(budget)} MNT full-month budget — "
                               f"100% shortfall"),
                     "tag":   "Revenue miss",
                 })
@@ -550,7 +551,7 @@ def build_alerts(tbl):
                     "impact": abs(actual - budget),
                     "label": r["display"],
                     "cat":   r["category"],
-                    "text":  (f"{fmt_mnt(actual)} received vs {fmt_mnt(budget)} budget "
+                    "text":  (f"{fmt_mnt(actual)} received in {period_label} vs {fmt_mnt(budget)} full-month budget "
                               f"({100 + pct:.0f}% of target)"),
                     "tag":   "Shortfall",
                 })
@@ -561,7 +562,7 @@ def build_alerts(tbl):
                     "impact": abs(actual - budget),
                     "label": r["display"],
                     "cat":   r["category"],
-                    "text":  (f"{fmt_mnt(actual)} spent vs {fmt_mnt(budget)} budget "
+                    "text":  (f"{fmt_mnt(actual)} spent in {period_label} vs {fmt_mnt(budget)} full-month budget "
                               f"(+{pct:.0f}% over)"),
                     "tag":   "Over budget",
                 })
@@ -596,7 +597,7 @@ def build_table_html(tbl, show_jun_budget=True):
     # Table header
     th_cells = "".join(f'<th class="num">{h}</th>' for h in headers)
     if show_jun_budget:
-        th_cells += '<th class="num bgt-col">Jun Budget</th>'
+        th_cells += '<th class="num bgt-col">Jun 2026 budget (full month)</th>'
 
     html  = '<div class="ft-wrap">'
     html += '<table class="ft">'
@@ -947,7 +948,7 @@ footer {{
   </div>
 
   <!-- ── Critical alerts ── -->
-  <div class="section-header"><span class="dot d-alert"></span>Alerts — {n_alerts} items requiring attention</div>
+  <div class="section-header"><span class="dot d-alert"></span>Alerts — {n_alerts} items &nbsp;<span style="font-weight:400;font-size:9px;color:var(--muted)">comparing {period_label} MTD actuals vs full June 2026 budget</span></div>
   <div class="alerts">
     {alerts_html}
   </div>
@@ -955,8 +956,9 @@ footer {{
   <!-- ── Line-item tracker ── -->
   <div class="section-header"><span class="dot d-cash"></span>Cash flow tracker — line by line</div>
   <div style="font-size:11px;color:var(--muted);margin-bottom:10px;">
-    Past months show full-month actuals. Jun 7 / Jun 14 / Jun 21 are month-to-date cumulative figures.
-    Jun Budget is the full June budget for reference.
+    Jan 2026–May 2026 columns show full-month actuals (1st–last day of each month).
+    Jun 1–7, Jun 1–14, Jun 1–21 are month-to-date cumulative figures (1 Jun to the stated date).
+    "Jun 2026 budget" column is the approved full-month June budget for comparison.
     Cell colour: <span class="cg">green = on/under budget</span> &nbsp;
     <span class="co">amber = moderately over</span> &nbsp;
     <span class="cr">red = significantly over or revenue missed</span> &nbsp;
