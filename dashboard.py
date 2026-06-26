@@ -938,11 +938,11 @@ footer {{
       <div class="sub">{bank_usd_fmt} &nbsp;|&nbsp; TDB + Khan Bank</div>
     </div>
 
-    <div class="card {runway_cls}">
-      <div class="lbl">Cash runway</div>
-      <div class="val {runway_color}">{runway_days}</div>
-      <div class="sub">days at current burn rate</div>
-      <div class="tag {runway_tag_cls}">{runway_tag}</div>
+    <div class="card {gap_cls}">
+      <div class="lbl">June cash gap</div>
+      <div class="val {gap_color}">{gap_fmt}</div>
+      <div class="sub">Bank {bank_mnt_fmt} vs {remaining_out_fmt} remaining June obligations</div>
+      <div class="tag {gap_tag_cls}">{gap_tag}</div>
     </div>
 
   </div>
@@ -1121,21 +1121,8 @@ def render_html(tbl, plan, bank, all_weekly):
     out_bgt = sum(r["jun_budget"] for r in tbl["rows"] if not r["is_inflow"])
     net_bgt = in_bgt - out_bgt
 
-    # Runway: bank balance ÷ daily burn
-    total_bank = bank["total_mnt"]
-    # Daily burn: total outflows in most recent period / days in period
+    total_bank   = bank["total_mnt"]
     period_label = tbl["last_period"]
-    # Approximate days: if Jun 21 → 21 days, else 30
-    import re
-    day_m = re.search(r"(\d+)", period_label)
-    days_in_period = int(day_m.group(1)) if day_m and period_label.lower().startswith("jun") else 30
-    daily_burn = total_out / days_in_period if total_out > 0 and days_in_period > 0 else 0
-    runway_days = int(total_bank / daily_burn) if daily_burn > 0 else 999
-
-    def pct_str(a, b):
-        if b == 0:
-            return "no budget"
-        return f"{a / b * 100:.0f}% of budget"
 
     # Cockpit card classes
     in_pct  = total_in / in_bgt * 100 if in_bgt else 0
@@ -1151,10 +1138,16 @@ def render_html(tbl, plan, bank, all_weekly):
     tag_out_txt = f"{out_pct:.0f}% of budget used" if out_bgt else "No budget reference"
     tag_out_cls = "tag-ok" if out_pct < 60 else ("tag-warn" if out_pct < 85 else "tag-crit")
 
-    runway_cls     = "card-crit" if runway_days < 30 else ("card-warn" if runway_days < 60 else "card-ok")
-    runway_color   = "v-bad" if runway_days < 30 else ("v-warn" if runway_days < 60 else "v-good")
-    runway_tag_txt = "Critical — under 30 days" if runway_days < 30 else ("Watch — under 60 days" if runway_days < 60 else "Stable")
-    runway_tag_cls = "tag-crit" if runway_days < 30 else ("tag-warn" if runway_days < 60 else "tag-ok")
+    # June cash gap: bank balance vs remaining June budget obligations
+    # Remaining = full-month budget minus what has already been spent MTD
+    remaining_out = max(0.0, out_bgt - total_out)
+    cash_gap      = total_bank - remaining_out   # negative = shortfall
+    gap_cls       = "card-crit" if cash_gap < 0 else "card-ok"
+    gap_color     = "v-bad" if cash_gap < 0 else "v-good"
+    gap_tag       = ("Shortfall — bank insufficient for remaining obligations"
+                     if cash_gap < 0
+                     else "Bank covers remaining June obligations")
+    gap_tag_cls   = "tag-crit" if cash_gap < 0 else "tag-ok"
 
     # Alerts
     alerts = build_alerts(tbl)
@@ -1191,11 +1184,12 @@ def render_html(tbl, plan, bank, all_weekly):
         net_color        = net_color,
         bank_mnt_fmt     = fmt_mnt(bank["total_mnt"]),
         bank_usd_fmt     = fmt_usd(bank["total_usd"]),
-        runway_days      = str(runway_days) if runway_days < 999 else "N/A",
-        runway_cls       = runway_cls,
-        runway_color     = runway_color,
-        runway_tag       = runway_tag_txt,
-        runway_tag_cls   = runway_tag_cls,
+        gap_fmt          = fmt_mnt(cash_gap),
+        gap_cls          = gap_cls,
+        gap_color        = gap_color,
+        gap_tag          = gap_tag,
+        gap_tag_cls      = gap_tag_cls,
+        remaining_out_fmt= fmt_mnt(remaining_out),
         card_in_cls      = card_in_cls,
         card_out_cls     = card_out_cls,
         card_net_cls     = card_net_cls,
