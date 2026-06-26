@@ -356,10 +356,11 @@ def parse_line_items(all_weekly):
     result_rows.sort(key=lambda r: (cat_order.get(r["category"], 99), r["display"]))
 
     return {
-        "col_headers": col_headers,
-        "jun_budget":  jun_budget,
-        "rows":        result_rows,
-        "last_period": col_headers[-1] if col_headers else "—",
+        "col_headers":   col_headers,
+        "col_sort_keys": [x[0] for x in col_data],   # (month_num, day) per column
+        "jun_budget":    jun_budget,
+        "rows":          result_rows,
+        "last_period":   col_headers[-1] if col_headers else "—",
     }
 
 
@@ -823,8 +824,27 @@ header h1 {{ font-size: 17px; font-weight: 600; }}
 .v-warn {{ color: var(--warn); }}
 .v-bad  {{ color: var(--bad); }}
 
+/* ── Collapsible alerts panel ── */
+.alerts-panel {{ margin-bottom: 20px; }}
+.alerts-panel > summary {{
+  cursor: pointer; list-style: none; user-select: none;
+  margin-bottom: 0;
+}}
+.alerts-panel > summary::-webkit-details-marker {{ display: none; }}
+.alerts-panel[open] > summary {{ margin-bottom: 10px; }}
+.alerts-period {{
+  font-weight: 400; font-size: 9px; color: var(--muted);
+  margin-left: 4px;
+}}
+.alerts-toggle {{
+  margin-left: auto; font-size: 10px; color: var(--muted);
+  font-weight: 400;
+}}
+.alerts-panel > summary .alerts-toggle::after {{ content: '▲ collapse'; }}
+.alerts-panel:not([open]) > summary .alerts-toggle::after {{ content: '▼ expand'; }}
+
 /* ── Alerts ── */
-.alerts {{ margin-bottom: 24px; }}
+.alerts {{ margin-bottom: 10px; }}
 .alert-row {{
   display: flex; align-items: baseline; gap: 10px;
   padding: 7px 14px; border-radius: 6px; margin-bottom: 5px;
@@ -940,7 +960,10 @@ header h1 {{ font-size: 17px; font-weight: 600; }}
 }}
 .chart-card h3 {{
   font-size: 10px; font-weight: 600; text-transform: uppercase;
-  letter-spacing: .7px; color: var(--muted); margin-bottom: 14px;
+  letter-spacing: .7px; color: var(--muted); margin-bottom: 4px;
+}}
+.chart-note {{
+  font-size: 9px; color: var(--muted); opacity: .65; margin: 0 0 10px; font-style: italic;
 }}
 
 footer {{
@@ -998,11 +1021,17 @@ footer {{
 
   </div>
 
-  <!-- ── Critical alerts ── -->
-  <div class="section-header"><span class="dot d-alert"></span>Alerts — {n_alerts} items &nbsp;<span style="font-weight:400;font-size:9px;color:var(--muted)">comparing {period_label} MTD actuals vs full June 2026 budget</span></div>
-  <div class="alerts">
-    {alerts_html}
-  </div>
+  <!-- ── Critical alerts (collapsible) ── -->
+  <details class="alerts-panel" open>
+    <summary class="section-header">
+      <span class="dot d-alert"></span>Alerts — {n_alerts} items
+      <span class="alerts-period">comparing {period_label} MTD actuals vs full June 2026 budget</span>
+      <span class="alerts-toggle"></span>
+    </summary>
+    <div class="alerts">
+      {alerts_html}
+    </div>
+  </details>
 
   <!-- ── Line-item tracker ── -->
   <div class="section-header"><span class="dot d-cash"></span>Cash flow tracker — line by line</div>
@@ -1030,11 +1059,11 @@ footer {{
   </div>
 
   <!-- ── P&L trend charts ── -->
-  <div class="section-header"><span class="dot d-plan"></span>2026 annual plan — monthly P&amp;L breakdown</div>
+  <div class="section-header"><span class="dot d-plan"></span>2026 plan vs actuals — full year</div>
   <div class="charts">
-    <div class="chart-card"><h3>Revenue &amp; gross profit plan (MNT)</h3><canvas id="c1"></canvas></div>
-    <div class="chart-card"><h3>OPEX plan (MNT)</h3><canvas id="c2"></canvas></div>
-    <div class="chart-card"><h3>Net profit plan (MNT)</h3><canvas id="c3"></canvas></div>
+    <div class="chart-card"><h3>Revenue — plan vs actuals (MNT)</h3><p class="chart-note">OT transit transactions excluded from actuals</p><canvas id="c1"></canvas></div>
+    <div class="chart-card"><h3>OPEX — plan vs actuals (MNT)</h3><p class="chart-note">OT transit transactions excluded from actuals</p><canvas id="c2"></canvas></div>
+    <div class="chart-card"><h3>Net profit plan (MNT) — red = loss</h3><canvas id="c3"></canvas></div>
   </div>
 
 </div>
@@ -1044,49 +1073,53 @@ footer {{
 </footer>
 
 <script>
-const OPTS = {{
-  responsive: true,
-  plugins: {{ legend: {{ display: false }} }},
-  scales: {{
-    x: {{ ticks: {{ color: '#8b90a8', font: {{ size: 10 }} }}, grid: {{ color: '#2e3150' }} }},
-    y: {{ ticks: {{ color: '#8b90a8', font: {{ size: 10 }} }}, grid: {{ color: '#2e3150' }} }}
-  }}
+const SCALE = {{
+  x: {{ ticks: {{ color: '#8b90a8', font: {{ size: 10 }} }}, grid: {{ color: '#2e3150' }} }},
+  y: {{ ticks: {{ color: '#8b90a8', font: {{ size: 10 }} }}, grid: {{ color: '#2e3150' }} }}
 }};
-const GOPTS = {{
-  responsive: true,
-  plugins: {{ legend: {{ display: true, labels: {{ color: '#8b90a8', font: {{ size: 11 }} }} }} }},
-  scales: {{
-    x: {{ ticks: {{ color: '#8b90a8', font: {{ size: 10 }} }}, grid: {{ color: '#2e3150' }} }},
-    y: {{ ticks: {{ color: '#8b90a8', font: {{ size: 10 }} }}, grid: {{ color: '#2e3150' }} }}
-  }}
-}};
+const OPTS  = {{ responsive:true, plugins:{{ legend:{{ display:false }} }}, scales: SCALE }};
+const GOPTS = {{ responsive:true, plugins:{{ legend:{{ display:true, labels:{{ color:'#8b90a8', font:{{ size:11 }} }} }} }}, scales: SCALE }};
+
 const P = {plan_json};
-const LBL = P.labels.slice(0,6);
-function bar(id, data, color, opts) {{
-  const nz = LBL.reduce((a,l,i) => {{ if(data[i]!==0) a.push(i); return a; }}, []);
-  const fl = nz.length ? nz.map(i=>LBL[i]) : LBL;
-  const fd = nz.length ? nz.map(i=>data[i]) : data;
+
+/* Plan vs actual — 12-month grouped bar.
+   actualData may contain null for months with no actuals (shown as gap). */
+function planActual(id, planData, actualData, color, label) {{
   new Chart(document.getElementById(id), {{
-    type:'bar',
-    data:{{ labels:fl, datasets:[{{data:fd, backgroundColor:color+'55', borderColor:color, borderWidth:1.5, borderRadius:3}}] }},
-    options: opts||OPTS
-  }});
-}}
-function grouped(id, d1,l1,c1, d2,l2,c2) {{
-  const nz = LBL.reduce((a,l,i)=>{{if(d1[i]||d2[i]) a.push(i); return a;}},[]);
-  const fl = nz.length ? nz.map(i=>LBL[i]) : LBL;
-  new Chart(document.getElementById(id), {{
-    type:'bar',
-    data:{{ labels:fl, datasets:[
-      {{label:l1, data:nz.map(i=>d1[i]), backgroundColor:c1+'88', borderColor:c1, borderWidth:1.5, borderRadius:3}},
-      {{label:l2, data:nz.map(i=>d2[i]), backgroundColor:c2+'88', borderColor:c2, borderWidth:1.5, borderRadius:3}}
-    ]}},
+    type: 'bar',
+    data: {{
+      labels: P.labels,
+      datasets: [
+        {{ label: label + ' — plan',   data: planData,   backgroundColor: color + '33',
+           borderColor: color + '77', borderWidth: 1, borderRadius: 3 }},
+        {{ label: label + ' — actual', data: actualData, backgroundColor: color + 'cc',
+           borderColor: color,        borderWidth: 1.5, borderRadius: 3,
+           skipNull: true }}
+      ]
+    }},
     options: GOPTS
   }});
 }}
-grouped('c1', P.revenue,'Revenue','#7c83e0', P.gross_profit,'Gross profit','#4caf82');
-bar('c2', P.opex,       '#f5a623');
-bar('c3', P.net_profit, '#4caf82');
+
+/* Net profit — per-bar color: green if positive, red if negative */
+function netProfitBar(id) {{
+  const data = P.net_profit;
+  const bgColors  = data.map(v => v === null ? 'transparent' : (v >= 0 ? '#4caf8255' : '#e05c5c55'));
+  const bdrColors = data.map(v => v === null ? 'transparent' : (v >= 0 ? '#4caf82'   : '#e05c5c'));
+  new Chart(document.getElementById(id), {{
+    type: 'bar',
+    data: {{
+      labels: P.labels,
+      datasets: [{{ data, backgroundColor: bgColors, borderColor: bdrColors,
+                    borderWidth: 1.5, borderRadius: 3 }}]
+    }},
+    options: OPTS
+  }});
+}}
+
+planActual('c1', P.revenue, P.revenue_actual, '#7c83e0', 'Revenue');
+planActual('c2', P.opex,    P.opex_actual,    '#f5a623', 'OPEX');
+netProfitBar('c3');
 </script>
 </body>
 </html>
@@ -1220,6 +1253,30 @@ def render_html(tbl, plan, bank, all_weekly):
         "labels": EN_MONTHS, "revenue": [0]*12, "gross_profit": [0]*12,
         "opex": [0]*12, "net_profit": [0]*12
     }
+
+    # Monthly actuals from cash flow table (full-month columns only, day==0).
+    # OT income/expense are Oyu Tolgoi pass-through transactions (nearly equal
+    # and opposite) excluded from chart totals to avoid crushing the scale;
+    # they remain visible in the line-item tables.
+    OT_TRANSIT   = {"ot income", "ot expense"}
+    sort_keys    = tbl.get("col_sort_keys", [])
+    month_col    = {sk[0]: i for i, sk in enumerate(sort_keys)
+                    if sk[1] == 0 and 1 <= sk[0] <= 12}
+    act_revenue  = [None] * 12
+    act_opex     = [None] * 12
+    for month_num, ci in month_col.items():
+        mi = month_num - 1
+        act_revenue[mi] = sum(
+            r["actuals"][ci] for r in tbl["rows"]
+            if r["is_inflow"] and not any(t in r["label"].lower() for t in OT_TRANSIT)
+        )
+        act_opex[mi] = sum(
+            r["actuals"][ci] for r in tbl["rows"]
+            if r["category"] in ("Opex", "Other")
+            and not any(t in r["label"].lower() for t in OT_TRANSIT)
+        )
+    plan_monthly["revenue_actual"] = act_revenue   # None where no data
+    plan_monthly["opex_actual"]    = act_opex
 
     return HTML.format(
         chartjs_tag      = chartjs_tag,
