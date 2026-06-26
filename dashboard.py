@@ -590,39 +590,48 @@ def cell_cls(actual, budget, is_inflow):
         return "cg" if pct <= 10 else ("cr" if pct > 25 else "co")
 
 
-def build_table_html(tbl, show_jun_budget=True):
-    headers = tbl["col_headers"]
-    rows    = tbl["rows"]
+# Groups: (display title, list of category names that belong here)
+TABLE_GROUPS = [
+    ("Revenue & inflows",
+     ["Inflows"],
+     "Money received — IEM/IEPL funding, export proceeds, other income"),
+    ("Production costs",
+     ["Stock", "Labour"],
+     "Direct cost of collecting and processing tallow and UCO"),
+    ("Overhead & operating expenses",
+     ["Opex", "Other"],
+     "Ongoing business support costs — utilities, fuel, rent, maintenance, communications"),
+    ("Financing & obligations",
+     ["Loans", "Fixed assets", "Taxes"],
+     "Capital expenditure, debt service, and tax payments"),
+]
 
-    # Table header
+
+def _make_table(group_rows, headers, title, subtitle, show_jun_budget=True):
+    """Build one sub-table for a group of rows."""
+    if not group_rows:
+        return ""
+
     th_cells = "".join(f'<th class="num">{h}</th>' for h in headers)
     if show_jun_budget:
-        th_cells += '<th class="num bgt-col">Jun 2026 budget (full month)</th>'
+        th_cells += '<th class="num bgt-col">Jun 2026 budget</th>'
 
-    html  = '<div class="ft-wrap">'
+    html  = f'<div class="tbl-group-header"><span class="tbl-group-title">{title}</span>'
+    html += f'<span class="tbl-group-sub">{subtitle}</span></div>'
+    html += '<div class="ft-wrap">'
     html += '<table class="ft">'
     html += (
         "<thead><tr>"
-        '<th class="col-cat">Category</th>'
-        '<th class="col-item">Line item</th>'
+        '<th class="col-item2">Line item</th>'
         + th_cells +
         "</tr></thead><tbody>"
     )
 
-    prev_cat = None
-    for r in rows:
-        cat = r["category"]
+    for r in group_rows:
         actuals   = r["actuals"]
         budgets   = r["budgets"]
         jun_b     = r["jun_budget"]
         is_inflow = r["is_inflow"]
-
-        cat_cell = ""
-        if cat != prev_cat:
-            # Count rows in this category for rowspan
-            count = sum(1 for x in rows if x["category"] == cat)
-            cat_cell = f'<td class="col-cat" rowspan="{count}">{cat}</td>'
-            prev_cat = cat
 
         td_vals = ""
         for i, (a, b) in enumerate(zip(actuals, budgets)):
@@ -630,7 +639,6 @@ def build_table_html(tbl, show_jun_budget=True):
             txt = fmt_mnt(a) if a != 0 else "—"
             td_vals += f'<td class="num {cls}">{txt}</td>'
 
-        # Jun budget column
         jb_cell = ""
         if show_jun_budget:
             jb_txt = fmt_mnt(jun_b) if jun_b != 0 else "—"
@@ -638,65 +646,99 @@ def build_table_html(tbl, show_jun_budget=True):
 
         html += (
             f"<tr>"
-            f"{cat_cell}"
-            f'<td class="col-item">{r["display"]}</td>'
-            f"{td_vals}"
-            f"{jb_cell}"
-            f"</tr>"
+            f'<td class="col-item2">{r["display"]}'
+            f'<span class="item-cat">{r["category"]}</span></td>'
+            f"{td_vals}{jb_cell}</tr>"
         )
 
-    # Category subtotals
-    html += "</tbody><tfoot>"
-    cats_done = set()
-    for r in rows:
-        cat = r["category"]
-        if cat in cats_done:
-            continue
-        cats_done.add(cat)
-        cat_rows = [x for x in rows if x["category"] == cat]
-        sums = [sum(rr["actuals"][i] for rr in cat_rows)
-                for i in range(len(headers))]
-        jun_sum = sum(rr["jun_budget"] for rr in cat_rows)
-        td_sums = "".join(
-            f'<td class="num tot">{fmt_mnt(s) if s != 0 else "—"}</td>'
-            for s in sums
-        )
-        jb_sum = f'<td class="num tot bgt-col">{fmt_mnt(jun_sum) if jun_sum else "—"}</td>' if show_jun_budget else ""
-        html += (
-            f"<tr class='total-row'>"
-            f'<td class="col-cat">Subtotal</td>'
-            f'<td class="col-item">{cat} total</td>'
-            f"{td_sums}{jb_sum}</tr>"
-        )
-
-    # Grand totals: inflows − outflows = net
+    # Subtotal row
     n = len(headers)
-    net_row = [0.0] * n
+    sums    = [sum(r["actuals"][i] for r in group_rows) for i in range(n)]
+    jun_sum = sum(r["jun_budget"] for r in group_rows)
+    td_sums = "".join(
+        f'<td class="num tot">{fmt_mnt(s) if s != 0 else "—"}</td>'
+        for s in sums
+    )
+    jb_sum = (f'<td class="num tot bgt-col">{fmt_mnt(jun_sum) if jun_sum else "—"}</td>'
+              if show_jun_budget else "")
+    html += (
+        f"<tr class='total-row'>"
+        f'<td class="col-item2 tot">{title} — subtotal</td>'
+        f"{td_sums}{jb_sum}</tr>"
+    )
+
+    html += "</tbody></table></div>"
+    return html
+
+
+def build_split_tables_html(tbl, show_jun_budget=True):
+    headers   = tbl["col_headers"]
+    all_rows  = tbl["rows"]
+    n         = len(headers)
+
+    # Index rows by category for quick lookup
+    by_cat = {}
+    for r in all_rows:
+        by_cat.setdefault(r["category"], []).append(r)
+
+    html = ""
+    group_sums = []   # track per-group totals for the net summary
+
+    for title, cats, subtitle in TABLE_GROUPS:
+        group_rows = []
+        for cat in cats:
+            group_rows.extend(by_cat.get(cat, []))
+        if not group_rows:
+            continue
+        html += _make_table(group_rows, headers, title, subtitle, show_jun_budget)
+        html += "<br>"
+        grp_sums = [sum(r["actuals"][i] for r in group_rows) for i in range(n)]
+        is_inflow_grp = any(r["is_inflow"] for r in group_rows)
+        group_sums.append((title, grp_sums, is_inflow_grp))
+
+    # Net cash flow summary bar
     in_row  = [0.0] * n
     out_row = [0.0] * n
-    for r in rows:
+    for r in all_rows:
         for i, a in enumerate(r["actuals"]):
             if r["is_inflow"]:
-                in_row[i]  += a
+                in_row[i] += a
             else:
                 out_row[i] += a
-            net_row[i] = in_row[i] - out_row[i]
+    net_row = [in_row[i] - out_row[i] for i in range(n)]
 
-    def summary_row(label, vals, cls=""):
-        cells = "".join(
-            f'<td class="num {cls}">{fmt_mnt(v) if v != 0 else "—"}</td>'
-            for v in vals
-        )
-        jb = '<td class="num bgt-col">—</td>' if show_jun_budget else ""
-        return (f"<tr class='total-row'>"
-                f'<td class="col-cat"></td>'
-                f'<td class="col-item">{label}</td>'
-                f"{cells}{jb}</tr>")
+    in_bgt  = sum(r["jun_budget"] for r in all_rows if r["is_inflow"])
+    out_bgt = sum(r["jun_budget"] for r in all_rows if not r["is_inflow"])
+    net_bgt = in_bgt - out_bgt
 
-    html += summary_row("Total inflows",  in_row)
-    html += summary_row("Total outflows", out_row)
-    html += summary_row("Net cash flow",  net_row, "net-row")
-    html += "</tfoot></table></div>"
+    def net_cell(v):
+        cls = "v-good" if v >= 0 else "v-bad"
+        return f'<td class="num net-sum {cls}">{fmt_mnt(v) if v != 0 else "—"}</td>'
+
+    th = "".join(f'<th class="num">{h}</th>' for h in headers)
+    bgt_th = f'<th class="num bgt-col">Jun 2026 budget</th>' if show_jun_budget else ""
+    in_cells  = "".join(f'<td class="num">{fmt_mnt(v) if v else "—"}</td>' for v in in_row)
+    out_cells = "".join(f'<td class="num">{fmt_mnt(v) if v else "—"}</td>' for v in out_row)
+    net_cells = "".join(net_cell(v) for v in net_row)
+    in_bgt_c  = f'<td class="num bgt-col">{fmt_mnt(in_bgt)}</td>' if show_jun_budget else ""
+    out_bgt_c = f'<td class="num bgt-col">{fmt_mnt(out_bgt)}</td>' if show_jun_budget else ""
+    net_bgt_c = f'<td class="num bgt-col">{fmt_mnt(net_bgt)}</td>' if show_jun_budget else ""
+
+    html += (
+        '<div class="tbl-group-header">'
+        '<span class="tbl-group-title">Net cash flow summary</span>'
+        '<span class="tbl-group-sub">All periods — inflows minus total outflows</span>'
+        '</div>'
+        '<div class="ft-wrap">'
+        '<table class="ft">'
+        f'<thead><tr><th class="col-item2">Category</th>{th}{bgt_th}</tr></thead>'
+        '<tbody>'
+        f'<tr><td class="col-item2">Total inflows</td>{in_cells}{in_bgt_c}</tr>'
+        f'<tr><td class="col-item2">Total outflows</td>{out_cells}{out_bgt_c}</tr>'
+        f'<tr class="total-row"><td class="col-item2 tot">Net cash flow</td>{net_cells}{net_bgt_c}</tr>'
+        '</tbody></table></div>'
+    )
+
     return html
 
 
@@ -830,20 +872,32 @@ header h1 {{ font-size: 17px; font-weight: 600; }}
 .bank-card .sub {{ font-size: 11px; color: var(--muted); margin-top: 4px; }}
 .bank-card-total {{ border-color: #4fc3f766; }}
 
-/* ── Line-item table ── */
+/* ── Table group headers ── */
+.tbl-group-header {{
+  display: flex; align-items: baseline; gap: 12px;
+  margin: 20px 0 8px;
+}}
+.tbl-group-title {{
+  font-size: 12px; font-weight: 700; color: var(--text);
+}}
+.tbl-group-sub {{
+  font-size: 11px; color: var(--muted);
+}}
+
+/* ── Line-item tables ── */
 .ft-wrap {{
   overflow-x: auto; border-radius: 8px;
-  border: 1px solid var(--border); margin-bottom: 28px;
+  border: 1px solid var(--border); margin-bottom: 6px;
 }}
 .ft {{
   border-collapse: collapse;
   width: 100%;
-  min-width: 900px;
+  min-width: 800px;
   font-size: 12px;
 }}
 .ft thead tr {{ background: var(--surf2); }}
 .ft th, .ft td {{
-  padding: 6px 10px;
+  padding: 5px 10px;
   border-bottom: 1px solid var(--border);
   border-right: 1px solid var(--border);
   white-space: nowrap;
@@ -851,22 +905,19 @@ header h1 {{ font-size: 17px; font-weight: 600; }}
 .ft th {{ font-weight: 600; font-size: 10px; text-transform: uppercase;
   letter-spacing: .5px; color: var(--muted); }}
 .ft .num {{ text-align: right; }}
-.col-cat {{
+.col-item2 {{
   position: sticky; left: 0; z-index: 2;
-  background: var(--surf2); min-width: 90px;
-  font-size: 10px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: .5px; color: var(--muted);
-}}
-.col-item {{
-  position: sticky; left: 90px; z-index: 2;
-  background: var(--surface); min-width: 180px;
+  background: var(--surface); min-width: 200px;
   border-right: 2px solid var(--border) !important;
 }}
-.ft thead .col-cat, .ft thead .col-item {{ background: var(--surf2); z-index: 3; }}
-.ft tfoot tr {{ background: var(--surf2); }}
-.ft .total-row .col-item {{ font-weight: 700; color: var(--text); }}
-.ft .total-row .col-cat  {{ color: var(--muted); font-weight: 400; }}
-.ft .net-row {{ color: var(--text); font-weight: 700; font-size: 13px; }}
+.ft thead .col-item2 {{ background: var(--surf2); z-index: 3; }}
+.ft .total-row {{ background: var(--surf2); }}
+.ft .total-row .col-item2 {{ font-weight: 700; }}
+.item-cat {{
+  display: block; font-size: 10px; color: var(--muted);
+  font-weight: 400; margin-top: 1px;
+}}
+.net-sum {{ font-weight: 700; font-size: 13px; }}
 .bgt-col {{ border-left: 2px solid var(--border) !important; color: var(--muted); }}
 
 /* Cell value classes */
@@ -956,13 +1007,13 @@ footer {{
   <!-- ── Line-item tracker ── -->
   <div class="section-header"><span class="dot d-cash"></span>Cash flow tracker — line by line</div>
   <div style="font-size:11px;color:var(--muted);margin-bottom:10px;">
-    Jan 2026–May 2026 columns show full-month actuals (1st–last day of each month).
-    Jun 1–7, Jun 1–14, Jun 1–21 are month-to-date cumulative figures (1 Jun to the stated date).
-    "Jun 2026 budget" column is the approved full-month June budget for comparison.
-    Cell colour: <span class="cg">green = on/under budget</span> &nbsp;
+    Jan 2026–May 2026 columns: full-month actuals. &nbsp;
+    Jun 1–7 / Jun 1–14 / Jun 1–21: month-to-date cumulative actuals. &nbsp;
+    Jun 2026 budget: approved full-month budget. &nbsp;
+    Colours: <span class="cg">green = on/under budget</span> &nbsp;
     <span class="co">amber = moderately over</span> &nbsp;
     <span class="cr">red = significantly over or revenue missed</span> &nbsp;
-    <span class="cy">italic amber = unbudgeted item</span>
+    <span class="cy">italic amber = unbudgeted</span>
   </div>
   {table_html}
 
@@ -1201,7 +1252,7 @@ def render_html(tbl, plan, bank, all_weekly):
         n_alerts         = len(alerts),
         alerts_html      = _alerts_html(alerts),
         # Table
-        table_html       = build_table_html(tbl),
+        table_html       = build_split_tables_html(tbl),
         # P&L
         pl_cards_html    = pl_cards_html,
         # Bank
