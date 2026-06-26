@@ -419,7 +419,7 @@ def parse_annual_plan(path):
                 "labels":      EN_MONTHS,
                 "revenue":     monthly_row("TOTAL REVENUE", "НИЙТ БОРЛУУЛАЛТ", "Total Revenue"),
                 "gross_profit":monthly_row("GROSS PROFIT", "Gross Profit"),
-                "opex":        monthly_row("TOTAL OPEX", "Total OpEx"),
+                "opex":        monthly_row("TOTAL OPERATING EXPENSES", "TOTAL OPEX", "Total OpEx"),
                 "net_profit":  monthly_row("NET PROFIT", "ЦЭВЭР АШИГ", "Net Profit"),
             }
             break
