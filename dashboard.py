@@ -5,6 +5,7 @@ Drop files in data/ → python dashboard.py → open output/dashboard.html
 """
 
 import sys
+import io
 import json
 from pathlib import Path
 from datetime import datetime
@@ -36,8 +37,9 @@ INFLOW_KW = ["fund from", "income of export", "income various",
 
 # Display category assignment (evaluated in order; first match wins)
 CATEGORIES = [
-    ("Inflows",      ["fund from", "income of export", "income various",
-                      "interest income", "ot income ("]),
+    ("Internal funding", ["fund from"]),
+    ("Inflows",          ["income of export", "income various",
+                          "interest income", "ot income ("]),
     ("Stock",        ["stock"]),
     ("Fixed assets", ["fixed asset"]),
     ("Taxes",        ["tax"]),
@@ -49,8 +51,8 @@ CATEGORIES = [
 
 # Clean display names for known account codes
 DISPLAY_NAMES = {
-    "fund from iem":                          "IEM funding",
-    "fund from iepl":                         "IEPL funding",
+    "fund from iem":                          "IEM — internal funding",
+    "fund from iepl":                         "IEPL — internal funding",
     "income of export":                       "Export income",
     "income various":                         "Other income",
     "interest income":                        "Interest income",
@@ -163,6 +165,12 @@ def clean_cols(df):
     return df
 
 
+def open_excel(path):
+    """Open an Excel file via BytesIO to avoid Windows file-lock conflicts."""
+    with open(path, "rb") as f:
+        return pd.ExcelFile(io.BytesIO(f.read()))
+
+
 # ---------------------------------------------------------------------------
 # File discovery
 # ---------------------------------------------------------------------------
@@ -224,7 +232,7 @@ def _col_info(path):
 
 def parse_raw_sheet(path):
     """Read the raw Actual sheet: returns ({label: {actual, budget}}, {label: note}, sheet)."""
-    xl = pd.ExcelFile(path)
+    xl = open_excel(path)
     # Prefer a dedicated "[Month] Actual" sheet over "Budget vs Actual Summary"
     actual_sheets = [s for s in xl.sheet_names if "actual" in s.lower()]
     non_summary   = [s for s in actual_sheets
@@ -278,7 +286,7 @@ def parse_raw_sheet(path):
 
 def parse_june_budget(path):
     """Read the June Budget sheet: returns {label: budget_value}."""
-    xl = pd.ExcelFile(path)
+    xl = open_excel(path)
     sheet = next((s for s in xl.sheet_names if "budget" in s.lower()
                   and "actual" not in s.lower() and "summary" not in s.lower()), None)
     if not sheet:
@@ -390,7 +398,11 @@ def parse_line_items(all_weekly):
 # ---------------------------------------------------------------------------
 
 def parse_annual_plan(path):
-    xl  = pd.ExcelFile(path)
+    try:
+        xl = open_excel(path)
+    except PermissionError:
+        print(f"    WARNING: {path.name} is locked (close it in Excel/OneDrive and rerun to update P&L section)")
+        return {"vt": {}, "monthly": {}, "file": path.name}
     out = {"vt": {}, "monthly": {}, "file": path.name}
 
     vt_sheet = next((s for s in xl.sheet_names if "variance" in s.lower()), None)
@@ -461,7 +473,7 @@ def vt(vt_dict, *kw):
 # ---------------------------------------------------------------------------
 
 def parse_bank(path):
-    xl = pd.ExcelFile(path)
+    xl = open_excel(path)
     detail = next(
         (s for s in xl.sheet_names if any(k in s.lower() for k in ["group", "mn", "detail"])),
         xl.sheet_names[-1]
@@ -542,15 +554,27 @@ def build_alerts(tbl):
 
         # Unbudgeted: no budget but actual spend/receipt
         if budget == 0 and actual != 0:
-            alerts.append({
-                "sev":    "warn",
-                "impact": abs(actual),
-                "label":  r["display"],
-                "cat":    r["category"],
-                "text":   f"{fmt_mnt(actual)} MNT in {period_label} — no budget set (unbudgeted item)",
-                "tag":    "Unbudgeted",
-                "note":   note,
-            })
+            if r["category"] == "Internal funding":
+                # Expected intercompany transfers — show as info, not warning
+                alerts.append({
+                    "sev":    "info",
+                    "impact": actual,
+                    "label":  r["display"],
+                    "cat":    r["category"],
+                    "text":   f"{fmt_mnt(actual)} MNT received in {period_label} — intercompany capital transfer",
+                    "tag":    "Internal funding",
+                    "note":   note,
+                })
+            else:
+                alerts.append({
+                    "sev":    "warn",
+                    "impact": abs(actual),
+                    "label":  r["display"],
+                    "cat":    r["category"],
+                    "text":   f"{fmt_mnt(actual)} MNT in {period_label} — no budget set (unbudgeted item)",
+                    "tag":    "Unbudgeted",
+                    "note":   note,
+                })
             continue
 
         if actual == 0 and budget > 0:
@@ -631,9 +655,12 @@ def cell_cls(actual, budget, is_inflow):
 
 # Groups: (display title, list of category names that belong here)
 TABLE_GROUPS = [
+    ("Internal funding",
+     ["Internal funding"],
+     "Capital transfers received from IEM and IEPL — intercompany funding"),
     ("Revenue & inflows",
      ["Inflows"],
-     "Money received — IEM/IEPL funding, export proceeds, other income"),
+     "External revenue — export proceeds, OT income, other income"),
     ("Production costs",
      ["Stock", "Labour"],
      "Direct cost of collecting and processing tallow and UCO"),
@@ -890,6 +917,7 @@ header h1 {{ font-size: 17px; font-weight: 600; }}
 }}
 .alert-crit {{ background: #e05c5c0d; border-color: var(--bad); }}
 .alert-warn {{ background: #f5a6230d; border-color: var(--warn); }}
+.alert-info {{ background: #4fc3f70d; border-color: var(--bank); }}
 .alert-dot  {{ font-size: 15px; flex-shrink: 0; }}
 .alert-tag  {{ font-size: 10px; font-weight: 700; text-transform: uppercase;
   letter-spacing: .5px; min-width: 90px; flex-shrink: 0; }}
@@ -1044,6 +1072,12 @@ footer {{
       <div class="lbl">Net cash flow</div>
       <div class="val {net_color}">{net_fmt}</div>
       <div class="sub">Budget: {net_bgt_fmt} MNT</div>
+    </div>
+
+    <div class="card">
+      <div class="lbl">Internal funding received</div>
+      <div class="val" style="color:var(--plan)">{internal_funding_fmt}</div>
+      <div class="sub">{internal_funding_detail}</div>
     </div>
 
     <div class="card">
@@ -1214,8 +1248,10 @@ def _alerts_html(alerts):
         return '<div class="alert-row alert-warn"><span class="alert-dot">—</span><span class="alert-text">No alerts generated</span></div>'
     html = ""
     for a in alerts[:12]:   # cap at 12
-        cls  = "alert-crit" if a["sev"] == "crit" else "alert-warn"
-        dot  = "&#9888;" if a["sev"] == "crit" else "&#x25CB;"
+        cls  = ("alert-crit" if a["sev"] == "crit"
+                else ("alert-info" if a["sev"] == "info" else "alert-warn"))
+        dot  = ("&#9888;" if a["sev"] == "crit"
+                else ("&#8505;" if a["sev"] == "info" else "&#x25CB;"))
         note = a.get("note", "")
         note_html = f'<span class="alert-note">{note}</span>' if note else ""
         html += (
@@ -1251,6 +1287,17 @@ def render_html(tbl, plan, bank, all_weekly):
 
     total_bank   = bank["total_mnt"]
     period_label = tbl["last_period"]
+
+    # Internal funding breakdown for cockpit card
+    int_funding_rows = [r for r in tbl["rows"] if r["category"] == "Internal funding"]
+    int_funding_total = sum(r["actuals"][last] for r in int_funding_rows
+                            if last < len(r["actuals"]))
+    int_funding_parts = [
+        f"{r['display'].split('—')[0].strip()}: {fmt_mnt(r['actuals'][last])}"
+        for r in int_funding_rows if last < len(r["actuals"]) and r["actuals"][last] != 0
+    ]
+    internal_funding_fmt    = fmt_mnt(int_funding_total) if int_funding_total else "—"
+    internal_funding_detail = " &nbsp;|&nbsp; ".join(int_funding_parts) if int_funding_parts else "No transfers this period"
 
     # Cockpit card classes
     in_pct  = total_in / in_bgt * 100 if in_bgt else 0
@@ -1352,6 +1399,8 @@ def render_html(tbl, plan, bank, all_weekly):
         net_fmt          = fmt_mnt(net),
         net_bgt_fmt      = fmt_mnt(net_bgt),
         net_color        = net_color,
+        internal_funding_fmt    = internal_funding_fmt,
+        internal_funding_detail = internal_funding_detail,
         bank_mnt_fmt     = fmt_mnt(bank["total_mnt"]),
         bank_usd_fmt     = fmt_usd(bank["total_usd"]),
         gap_fmt          = fmt_mnt(cash_gap),
