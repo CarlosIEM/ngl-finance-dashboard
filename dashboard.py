@@ -1036,8 +1036,7 @@ footer {{
   <!-- ── Line-item tracker ── -->
   <div class="section-header"><span class="dot d-cash"></span>Cash flow tracker — line by line</div>
   <div style="font-size:11px;color:var(--muted);margin-bottom:10px;">
-    Jan 2026–May 2026 columns: full-month actuals. &nbsp;
-    Jun 1–7 / Jun 1–14 / Jun 1–21: month-to-date cumulative actuals. &nbsp;
+    {col_legend}
     Jun 2026 budget: approved full-month budget. &nbsp;
     Colours: <span class="cg">green = on/under budget</span> &nbsp;
     <span class="co">amber = moderately over</span> &nbsp;
@@ -1233,6 +1232,24 @@ def render_html(tbl, plan, bank, all_weekly):
                      else "Bank covers remaining June obligations")
     gap_tag_cls   = "tag-crit" if cash_gap < 0 else "tag-ok"
 
+    # Legend — auto-derive from column headers
+    sort_keys = tbl.get("col_sort_keys", [])
+    headers   = tbl["col_headers"]
+    full_month_labels = [h for h, sk in zip(headers, sort_keys) if sk[1] == 0]
+    mtd_labels        = [h for h, sk in zip(headers, sort_keys) if sk[1] != 0]
+    legend_parts = []
+    if full_month_labels:
+        legend_parts.append(
+            f"{full_month_labels[0]}–{full_month_labels[-1]} columns: full-month actuals."
+            if len(full_month_labels) > 1
+            else f"{full_month_labels[0]}: full-month actuals."
+        )
+    if mtd_labels:
+        legend_parts.append(
+            f"{' / '.join(mtd_labels)}: month-to-date cumulative actuals."
+        )
+    col_legend = " &nbsp;\n    ".join(legend_parts) + (" &nbsp;" if legend_parts else "")
+
     # Alerts
     alerts = build_alerts(tbl)
 
@@ -1309,6 +1326,7 @@ def render_html(tbl, plan, bank, all_weekly):
         n_alerts         = len(alerts),
         alerts_html      = _alerts_html(alerts),
         # Table
+        col_legend       = col_legend,
         table_html       = build_split_tables_html(tbl),
         # P&L
         pl_cards_html    = pl_cards_html,
