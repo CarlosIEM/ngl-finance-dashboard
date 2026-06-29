@@ -219,11 +219,11 @@ def _col_info(path):
 
 
 # ---------------------------------------------------------------------------
-# Raw actual sheet parser (col 0=label, col 1=actual, col 2=budget)
+# Raw actual sheet parser (col 0=label, col 1=actual, col 2=budget, col 4=explanation)
 # ---------------------------------------------------------------------------
 
 def parse_raw_sheet(path):
-    """Read the raw Actual sheet: returns {label: {actual, budget}}."""
+    """Read the raw Actual sheet: returns ({label: {actual, budget}}, {label: note}, sheet)."""
     xl = pd.ExcelFile(path)
     # Prefer a dedicated "[Month] Actual" sheet over "Budget vs Actual Summary"
     actual_sheets = [s for s in xl.sheet_names if "actual" in s.lower()]
@@ -233,17 +233,28 @@ def parse_raw_sheet(path):
     df = clean_cols(pd.read_excel(path, sheet_name=sheet, header=0))
     df = df.dropna(how="all")
     if df.shape[1] < 2:
-        return {}, sheet
+        return {}, {}, sheet
 
     label_col  = df.columns[0]
     actual_col = df.columns[1]
-    budget_col = df.columns[2] if df.shape[1] > 2 else None
+
+    # Detect explanation column before assigning budget_col.
+    # 5-col format (Jan/Feb/Mar/Jun files): label, actual, budget, diff, Explanation
+    # 3-col format (Apr/May files): label, actual, Explanation (no budget col)
+    expl_col   = find_col(df, "Explanation", "Тайлбар", "Note")
+    if expl_col is None and df.shape[1] == 3:
+        # The third column is explanations, not budget
+        expl_col   = df.columns[2]
+        budget_col = None
+    else:
+        budget_col = df.columns[2] if df.shape[1] > 2 else None
 
     # Row labels that are aggregation/total rows, not line items
     SKIP_LABELS = {"cash", "total", "net", "net cash", "opening balance",
                    "closing balance", "total cash flow", "sub total", "subtotal"}
 
-    rows = {}
+    rows  = {}
+    notes = {}
     for _, row in df.iterrows():
         lbl = " ".join(str(row.get(label_col, "")).split()).strip()
         if not lbl or lbl.lower() in ("nan", "none", "account code"):
@@ -257,8 +268,12 @@ def parse_raw_sheet(path):
         actual = safe_float(row.get(actual_col, 0))
         budget = safe_float(row.get(budget_col, 0)) if budget_col else 0
         rows[lbl] = {"actual": actual, "budget": budget}
+        if expl_col:
+            note = " ".join(str(row.get(expl_col, "")).split()).strip()
+            if note and note.lower() not in ("nan", "none", ""):
+                notes[lbl] = note
 
-    return rows, sheet
+    return rows, notes, sheet
 
 
 def parse_june_budget(path):
@@ -293,17 +308,17 @@ def parse_line_items(all_weekly):
       col_meta     : list of (sort_key, label)
       jun_budget   : {raw_label: budget_float}
       rows         : list of {label, display, category, is_inflow,
-                               actuals[n], budgets[n]}
+                               actuals[n], budgets[n], note}
     """
-    col_data  = []   # list of (sort_key, col_label, {raw_label: {actual, budget}})
+    col_data  = []   # list of (sort_key, col_label, rows_dict, notes_dict)
     jun_budget = {}
     most_recent_june = None
 
     for path in all_weekly:
         col_label, sort_key = _col_info(path)
-        rows, sheet = parse_raw_sheet(path)
-        col_data.append((sort_key, col_label, rows))
-        print(f"    {col_label:10s} <- {path.name} [{sheet}] ({len(rows)} rows)")
+        rows, notes, sheet = parse_raw_sheet(path)
+        col_data.append((sort_key, col_label, rows, notes))
+        print(f"    {col_label:10s} <- {path.name} [{sheet}] ({len(rows)} rows, {len(notes)} notes)")
         if sort_key[0] == 6:
             most_recent_june = path
 
@@ -315,12 +330,17 @@ def parse_line_items(all_weekly):
     if most_recent_june:
         jun_budget = parse_june_budget(most_recent_june)
 
-    # Collect all unique labels across all files
-    all_labels = {}
-    for _, _, rows in col_data:
+    # Collect all unique labels across all files; build latest note per label
+    # (iterate chronologically so the most recent file's note wins)
+    all_labels   = {}
+    latest_notes = {}
+    for _, _, rows, notes in col_data:
         for lbl in rows:
             if lbl not in all_labels:
                 all_labels[lbl] = None
+        for lbl, note in notes.items():
+            if note:
+                latest_notes[lbl] = note
 
     # Build row objects
     result_rows = []
@@ -328,7 +348,7 @@ def parse_line_items(all_weekly):
         inflow = item_is_inflow(lbl)
         actuals = []
         budgets = []
-        for _, _, rows in col_data:
+        for _, _, rows, _ in col_data:
             entry = rows.get(lbl, {"actual": 0, "budget": 0})
             a = entry["actual"]
             b = entry["budget"]
@@ -348,6 +368,7 @@ def parse_line_items(all_weekly):
             "actuals":  actuals,
             "budgets":  budgets,
             "jun_budget": abs(jb) if jb is not None else 0,
+            "note":     latest_notes.get(lbl, ""),
         })
 
     # Sort rows: by category order, then by display name
@@ -503,12 +524,18 @@ def build_alerts(tbl):
     """Return list of alert dicts sorted by impact (abs MNT variance)."""
     alerts = []
     last = len(tbl["col_headers"]) - 1  # most recent column
-    period_label = tbl["col_headers"][last]   # e.g. "Jun 1–21"
-    jun_bgt_idx = last   # for June files, last column is most recent MTD
+    period_label = tbl["col_headers"][last]   # e.g. "Jun 1–28"
+
+    # Full-month column indexes (day == 0) for catch-up payment detection
+    sort_keys        = tbl.get("col_sort_keys", [])
+    full_month_idxs  = [i for i, sk in enumerate(sort_keys) if sk[1] == 0]
+    # Last 2 full-month columns before the current period
+    recent_fm_idxs   = [i for i in full_month_idxs if i < last][-2:]
 
     for r in tbl["rows"]:
         actual = r["actuals"][last] if r["actuals"] else 0
         budget = r["jun_budget"]
+        note   = r.get("note", "")
 
         if budget == 0 and actual == 0:
             continue
@@ -516,12 +543,13 @@ def build_alerts(tbl):
         # Unbudgeted: no budget but actual spend/receipt
         if budget == 0 and actual != 0:
             alerts.append({
-                "sev": "warn",
+                "sev":    "warn",
                 "impact": abs(actual),
-                "label": r["display"],
-                "cat":   r["category"],
-                "text":  f"{fmt_mnt(actual)} MNT in {period_label} — no budget set (unbudgeted item)",
-                "tag":   "Unbudgeted",
+                "label":  r["display"],
+                "cat":    r["category"],
+                "text":   f"{fmt_mnt(actual)} MNT in {period_label} — no budget set (unbudgeted item)",
+                "tag":    "Unbudgeted",
+                "note":   note,
             })
             continue
 
@@ -529,13 +557,14 @@ def build_alerts(tbl):
             # Revenue miss: inflow expected but nothing received
             if r["is_inflow"]:
                 alerts.append({
-                    "sev": "crit",
+                    "sev":    "crit",
                     "impact": budget,
-                    "label": r["display"],
-                    "cat":   r["category"],
-                    "text":  (f"0 received in {period_label} vs {fmt_mnt(budget)} MNT full-month budget — "
-                              f"100% shortfall"),
-                    "tag":   "Revenue miss",
+                    "label":  r["display"],
+                    "cat":    r["category"],
+                    "text":   (f"0 received in {period_label} vs {fmt_mnt(budget)} MNT full-month budget — "
+                               f"100% shortfall"),
+                    "tag":    "Revenue miss",
+                    "note":   note,
                 })
             continue
 
@@ -548,24 +577,33 @@ def build_alerts(tbl):
         if r["is_inflow"]:
             if pct < -20:   # received less than 80% of expected inflow
                 alerts.append({
-                    "sev": "crit" if pct < -50 else "warn",
+                    "sev":    "crit" if pct < -50 else "warn",
                     "impact": abs(actual - budget),
-                    "label": r["display"],
-                    "cat":   r["category"],
-                    "text":  (f"{fmt_mnt(actual)} received in {period_label} vs {fmt_mnt(budget)} full-month budget "
-                              f"({100 + pct:.0f}% of target)"),
-                    "tag":   "Shortfall",
+                    "label":  r["display"],
+                    "cat":    r["category"],
+                    "text":   (f"{fmt_mnt(actual)} received in {period_label} vs {fmt_mnt(budget)} full-month budget "
+                               f"({100 + pct:.0f}% of target)"),
+                    "tag":    "Shortfall",
+                    "note":   note,
                 })
         else:
             if pct > 15:    # spending more than 115% of budget
+                # Catch-up detection: flag if prior 1-2 full months had zero actual
+                prior_zeros = [
+                    tbl["col_headers"][i] for i in recent_fm_idxs
+                    if i < len(r["actuals"]) and r["actuals"][i] == 0
+                ]
+                catch_up = (f" — zero in {', '.join(prior_zeros)}, possible catch-up payment"
+                            if prior_zeros else "")
                 alerts.append({
-                    "sev": "crit" if pct > 50 else "warn",
+                    "sev":    "crit" if pct > 50 else "warn",
                     "impact": abs(actual - budget),
-                    "label": r["display"],
-                    "cat":   r["category"],
-                    "text":  (f"{fmt_mnt(actual)} spent in {period_label} vs {fmt_mnt(budget)} full-month budget "
-                              f"(+{pct:.0f}% over)"),
-                    "tag":   "Over budget",
+                    "label":  r["display"],
+                    "cat":    r["category"],
+                    "text":   (f"{fmt_mnt(actual)} spent in {period_label} vs {fmt_mnt(budget)} full-month budget "
+                               f"(+{pct:.0f}% over{catch_up})"),
+                    "tag":    "Over budget",
+                    "note":   note,
                 })
 
     alerts.sort(key=lambda a: (-a["impact"], a["sev"]))
@@ -856,7 +894,9 @@ header h1 {{ font-size: 17px; font-weight: 600; }}
 .alert-tag  {{ font-size: 10px; font-weight: 700; text-transform: uppercase;
   letter-spacing: .5px; min-width: 90px; flex-shrink: 0; }}
 .alert-item {{ font-weight: 600; min-width: 160px; flex-shrink: 0; }}
+.alert-body {{ display: flex; flex-direction: column; gap: 2px; }}
 .alert-text {{ color: var(--muted); font-size: 12px; }}
+.alert-note {{ color: var(--muted); font-size: 11px; font-style: italic; opacity: .8; }}
 
 /* ── P&L cards ── */
 .pl-cards {{
@@ -1174,14 +1214,19 @@ def _alerts_html(alerts):
         return '<div class="alert-row alert-warn"><span class="alert-dot">—</span><span class="alert-text">No alerts generated</span></div>'
     html = ""
     for a in alerts[:12]:   # cap at 12
-        cls   = "alert-crit" if a["sev"] == "crit" else "alert-warn"
-        dot   = "&#9888;" if a["sev"] == "crit" else "&#x25CB;"
+        cls  = "alert-crit" if a["sev"] == "crit" else "alert-warn"
+        dot  = "&#9888;" if a["sev"] == "crit" else "&#x25CB;"
+        note = a.get("note", "")
+        note_html = f'<span class="alert-note">{note}</span>' if note else ""
         html += (
             f'<div class="alert-row {cls}">'
             f'<span class="alert-dot">{dot}</span>'
             f'<span class="alert-tag">{a["tag"]}</span>'
             f'<span class="alert-item">{a["label"]}</span>'
+            f'<span class="alert-body">'
             f'<span class="alert-text">{a["text"]}</span>'
+            f'{note_html}'
+            f'</span>'
             f'</div>'
         )
     return html
